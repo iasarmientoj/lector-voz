@@ -22,6 +22,8 @@
            background:var(--card); color:var(--fg); cursor:pointer; }
   button.primary { background:var(--accent); color:#fff; border-color:var(--accent); min-width:110px; }
   label { display:flex; align-items:center; gap:8px; color:var(--muted); }
+  input[type=number] { font:inherit; width:72px; padding:6px; border-radius:8px; border:1px solid var(--border);
+           background:var(--card); color:var(--fg); }
   select { font:inherit; max-width:260px; padding:6px; border-radius:8px; border:1px solid var(--border);
            background:var(--card); color:var(--fg); }
   #now { margin-top:12px; color:var(--muted); min-height:1.5em; }
@@ -36,7 +38,10 @@
   <div class="bar">
     <button id="play" class="primary">▶ Leer</button>
     <button id="stop">■ Detener</button>
-    <label>Velocidad <input id="rate" type="range" min="0.5" max="3" step="0.1" value="1"> <span id="rateVal">1.0x</span></label>
+    <label>Velocidad <input id="rate" type="range" min="0.1" max="3" step="0.05" value="1">
+      <input id="rateNum" type="number" min="0.1" max="10" step="0.05" value="1">x</label>
+    <label title="Pausa extra entre cada palabra, para ir aún más lento">Pausa entre palabras
+      <input id="gap" type="number" min="0" max="10" step="0.1" value="0"> s</label>
     <label>Voz <select id="voice"></select></label>
   </div>
   <div id="now"></div>
@@ -47,7 +52,8 @@ const ta = document.getElementById('txt');
 const playBtn = document.getElementById('play');
 const stopBtn = document.getElementById('stop');
 const rate = document.getElementById('rate');
-const rateVal = document.getElementById('rateVal');
+const rateNum = document.getElementById('rateNum');
+const gapIn = document.getElementById('gap');
 const voiceSel = document.getElementById('voice');
 const now = document.getElementById('now');
 const synth = window.speechSynthesis;
@@ -108,17 +114,23 @@ function speakFrom(start) {
   while (start < text.length && /\s/.test(text[start])) start++;
   if (start >= text.length) { finish(true); return; }
   pos = start;
-  const end = nextChunkEnd(text, start);
+  const gap = Math.max(0, parseFloat(gapIn.value) || 0) * 1000;
+  // con pausa entre palabras se lee palabra por palabra
+  const end = gap ? start + /\S+\s*/y.exec(text.slice(start))[0].length : nextChunkEnd(text, start);
   const u = new SpeechSynthesisUtterance(text.slice(start, end));
   const v = voices[voiceSel.value];
   if (v) { u.voice = v; u.lang = v.lang; } else u.lang = 'es-ES';
-  u.rate = parseFloat(rate.value);
+  u.rate = getRate();
   u.onboundary = e => {
     if (myRun !== run || e.name === 'sentence') return;
     pos = start + e.charIndex;
     showWord(pos);
   };
-  u.onend = () => { if (myRun === run && playing) speakFrom(end); };
+  u.onend = () => {
+    if (myRun !== run || !playing) return;
+    if (gap) setTimeout(() => { if (myRun === run && playing) speakFrom(end); }, gap);
+    else speakFrom(end);
+  };
   u.onerror = e => { if (myRun === run && e.error !== 'interrupted' && e.error !== 'canceled') { console.warn(e.error); finish(false); } };
   showWord(start);
   synth.speak(u);
@@ -150,8 +162,14 @@ function finish(reachedEnd) {
 
 playBtn.onclick = () => playing ? pause() : play();
 stopBtn.onclick = () => { finish(false); pos = 0; ta.setSelectionRange(0, 0); now.textContent = ''; };
-rate.oninput = () => { rateVal.textContent = parseFloat(rate.value).toFixed(1) + 'x'; };
+function getRate() {
+  const r = parseFloat(rateNum.value);
+  return isFinite(r) ? Math.min(10, Math.max(0.1, r)) : 1;
+}
+rate.oninput = () => { rateNum.value = rate.value; };
 rate.onchange = () => { if (playing) speakFrom(pos); };
+rateNum.onchange = () => { rateNum.value = getRate(); rate.value = getRate(); if (playing) speakFrom(pos); };
+gapIn.onchange = () => { if (playing) speakFrom(pos); };
 voiceSel.onchange = () => { if (playing) speakFrom(pos); };
 // Si el usuario hace clic en otro punto mientras lee, salta ahí
 ta.addEventListener('mouseup', () => { if (playing) setTimeout(() => speakFrom(ta.selectionStart), 0); });
