@@ -40,8 +40,13 @@
     <button id="stop">■ Detener</button>
     <label>Velocidad <input id="rate" type="range" min="0.1" max="3" step="0.05" value="1">
       <input id="rateNum" type="number" min="0.1" max="10" step="0.05" value="1">x</label>
-    <label title="Pausa extra entre cada palabra, para ir aún más lento">Pausa entre palabras
-      <input id="gap" type="number" min="0" max="10" step="0.1" value="0"> s</label>
+    <label title="Pausa extra entre cada palabra">Pausa entre palabras
+      <select id="gap">
+        <option value="">Ninguna</option>
+        <option value=",">Corta</option>
+        <option value=".">Media</option>
+        <option value="long">Larga</option>
+      </select></label>
     <label>Voz <select id="voice"></select></label>
   </div>
   <div id="now"></div>
@@ -114,16 +119,28 @@ function speakFrom(start) {
   while (start < text.length && /\s/.test(text[start])) start++;
   if (start >= text.length) { finish(true); return; }
   pos = start;
-  const gap = Math.max(0, parseFloat(gapIn.value) || 0) * 1000;
-  // con pausa entre palabras se lee palabra por palabra
+  const mode = gapIn.value;
+  const gap = mode === 'long' ? 700 : 0;
+  // pausa larga: palabra por palabra con espera; corta/media: se intercala "," o "." en una sola frase
   const end = gap ? start + /\S+\s*/y.exec(text.slice(start))[0].length : nextChunkEnd(text, start);
-  const u = new SpeechSynthesisUtterance(text.slice(start, end));
+  let spoken = text.slice(start, end), map = null;
+  if (mode === ',' || mode === '.') {
+    map = []; spoken = '';
+    for (const w of text.slice(start, end).matchAll(/\S+/g)) {
+      if (spoken) spoken += /[.,;:!?]$/.test(spoken) ? ' ' : mode + ' ';
+      map.push([spoken.length, w.index]);
+      spoken += w[0];
+    }
+  }
+  const u = new SpeechSynthesisUtterance(spoken);
   const v = voices[voiceSel.value];
   if (v) { u.voice = v; u.lang = v.lang; } else u.lang = 'es-ES';
   u.rate = getRate();
   u.onboundary = e => {
     if (myRun !== run || e.name === 'sentence') return;
-    pos = start + e.charIndex;
+    let off = e.charIndex;
+    if (map) { let k = 0; while (k + 1 < map.length && map[k + 1][0] <= off) k++; off = map[k][1]; }
+    pos = start + off;
     showWord(pos);
   };
   u.onend = () => {
