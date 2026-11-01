@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lector de voz</title>
+<style>
+  :root { --bg:#f5f5f7; --card:#fff; --fg:#1d1d1f; --muted:#6e6e73; --accent:#0a66ff; --border:#d2d2d7; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#111; --card:#1c1c1e; --fg:#f5f5f7; --muted:#a1a1a6; --accent:#4c8dff; --border:#3a3a3c; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.5 system-ui, sans-serif; }
+  main { max-width:900px; margin:0 auto; padding:24px 16px; }
+  h1 { font-size:1.4rem; margin:0 0 12px; }
+  textarea { width:100%; height:55vh; padding:14px; font:inherit; font-size:1.05rem; color:var(--fg);
+             background:var(--card); border:1px solid var(--border); border-radius:10px; resize:vertical; }
+  textarea::selection { background:#ffd54a; color:#000; }
+  .bar { display:flex; flex-wrap:wrap; gap:12px; align-items:center; margin-top:12px;
+         background:var(--card); border:1px solid var(--border); border-radius:10px; padding:12px; }
+  button { font:inherit; padding:8px 16px; border-radius:8px; border:1px solid var(--border);
+           background:var(--card); color:var(--fg); cursor:pointer; }
+  button.primary { background:var(--accent); color:#fff; border-color:var(--accent); min-width:110px; }
+  label { display:flex; align-items:center; gap:8px; color:var(--muted); }
+  select { font:inherit; max-width:260px; padding:6px; border-radius:8px; border:1px solid var(--border);
+           background:var(--card); color:var(--fg); }
+  #now { margin-top:12px; color:var(--muted); min-height:1.5em; }
+  #now mark { background:#ffd54a; color:#000; border-radius:3px; padding:0 2px; }
+  .hint { font-size:.85rem; color:var(--muted); margin-top:8px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Lector de voz</h1>
+  <textarea id="txt" placeholder="Pega aquí tu texto…"></textarea>
+  <div class="bar">
+    <button id="play" class="primary">▶ Leer</button>
+    <button id="stop">■ Detener</button>
+    <label>Velocidad <input id="rate" type="range" min="0.5" max="3" step="0.1" value="1"> <span id="rateVal">1.0x</span></label>
+    <label>Voz <select id="voice"></select></label>
+  </div>
+  <div id="now"></div>
+  <div class="hint">Haz clic en el texto para poner el cursor: la lectura empieza desde ahí. Al pausar, el cursor queda donde se detuvo. Atajo: Ctrl+Espacio = leer/pausar.</div>
+</main>
+<script>
+const ta = document.getElementById('txt');
+const playBtn = document.getElementById('play');
+const stopBtn = document.getElementById('stop');
+const rate = document.getElementById('rate');
+const rateVal = document.getElementById('rateVal');
+const voiceSel = document.getElementById('voice');
+const now = document.getElementById('now');
+const synth = window.speechSynthesis;
+
+let voices = [];
+let playing = false;
+let pos = 0;      // posición actual de lectura en el texto
+let run = 0;      // id de ejecución para ignorar eventos viejos tras cancel()
+
+function loadVoices() {
+  const all = synth.getVoices();
+  voices = all.filter(v => v.lang.toLowerCase().startsWith('es'));
+  if (!voices.length) voices = all;
+  const prev = voiceSel.value;
+  voiceSel.innerHTML = voices.map((v, i) => `<option value="${i}">${v.name} (${v.lang})</option>`).join('');
+  if (prev) voiceSel.value = prev;
+}
+loadVoices();
+synth.onvoiceschanged = loadVoices;
+
+// Divide en trozos por frases (Chrome corta utterances largas)
+function nextChunkEnd(text, start) {
+  const max = 220;
+  const re = /[.!?¡¿;:\n]+\s*/g;
+  re.lastIndex = start;
+  let m, end = -1;
+  while ((m = re.exec(text))) {
+    const e = m.index + m[0].length;
+    if (e - start > max && end !== -1) break;
+    end = e;
+    if (e - start >= 80) break;
+  }
+  if (end === -1 || end - start > max * 1.5) {
+    end = Math.min(text.length, start + max);
+    const sp = text.lastIndexOf(' ', end);
+    if (sp > start + 20 && end < text.length) end = sp + 1;
+  }
+  return end;
+}
+
+function showWord(i) {
+  const text = ta.value;
+  const m = /\S+/y; m.lastIndex = i;
+  const w = m.exec(text);
+  const len = w ? w[0].length : 0;
+  ta.setSelectionRange(i, i + len);
+  const a = Math.max(0, i - 60), b = Math.min(text.length, i + len + 60);
+  const esc = s => s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+  now.innerHTML = (a > 0 ? '…' : '') + esc(text.slice(a, i)) + '<mark>' + esc(text.slice(i, i + len)) +
+                  '</mark>' + esc(text.slice(i + len, b)) + (b < text.length ? '…' : '');
+}
+
+function speakFrom(start) {
+  synth.cancel();
+  const myRun = ++run;
+  const text = ta.value;
+  // saltar espacios iniciales
+  while (start < text.length && /\s/.test(text[start])) start++;
+  if (start >= text.length) { finish(true); return; }
+  pos = start;
+  const end = nextChunkEnd(text, start);
+  const u = new SpeechSynthesisUtterance(text.slice(start, end));
+  const v = voices[voiceSel.value];
+  if (v) { u.voice = v; u.lang = v.lang; } else u.lang = 'es-ES';
+  u.rate = parseFloat(rate.value);
+  u.onboundary = e => {
+    if (myRun !== run || e.name === 'sentence') return;
+    pos = start + e.charIndex;
+    showWord(pos);
+  };
+  u.onend = () => { if (myRun === run && playing) speakFrom(end); };
+  u.onerror = e => { if (myRun === run && e.error !== 'interrupted' && e.error !== 'canceled') { console.warn(e.error); finish(false); } };
+  showWord(start);
+  synth.speak(u);
+}
+
+function setPlaying(p) {
+  playing = p;
+  playBtn.textContent = p ? '❚❚ Pausa' : '▶ Leer';
+}
+
+function play() {
+  if (!ta.value.trim()) { ta.focus(); return; }
+  let start = ta.selectionStart;
+  if (start >= ta.value.length) start = 0; // al final: empezar de nuevo
+  setPlaying(true);
+  speakFrom(start);
+}
+
+function pause() {
+  run++; synth.cancel(); setPlaying(false);
+  ta.focus();
+  ta.setSelectionRange(pos, pos); // el cursor queda donde se pausó
+}
+
+function finish(reachedEnd) {
+  run++; synth.cancel(); setPlaying(false);
+  if (reachedEnd) { now.textContent = 'Fin del texto.'; ta.setSelectionRange(0, 0); pos = 0; }
+}
+
+playBtn.onclick = () => playing ? pause() : play();
+stopBtn.onclick = () => { finish(false); pos = 0; ta.setSelectionRange(0, 0); now.textContent = ''; };
+rate.oninput = () => { rateVal.textContent = parseFloat(rate.value).toFixed(1) + 'x'; };
+rate.onchange = () => { if (playing) speakFrom(pos); };
+voiceSel.onchange = () => { if (playing) speakFrom(pos); };
+// Si el usuario hace clic en otro punto mientras lee, salta ahí
+ta.addEventListener('mouseup', () => { if (playing) setTimeout(() => speakFrom(ta.selectionStart), 0); });
+document.addEventListener('keydown', e => {
+  if (e.ctrlKey && e.code === 'Space') { e.preventDefault(); playBtn.click(); }
+});
+window.addEventListener('beforeunload', () => synth.cancel());
+</script>
+</body>
+</html>
